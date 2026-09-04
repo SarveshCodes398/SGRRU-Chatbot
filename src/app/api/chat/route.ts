@@ -33,48 +33,46 @@ const OFFICIAL_DOCUMENTS = {
   academic: {
     name: "SGRRU Official Academic Brochure 2026-27",
     filename: "brochure.pdf",
-    url: "/pdfs/brochure.pdf",
   },
   fee: {
     name: "SGRRU Official Fee Structure 2026-27",
     filename: "fee.pdf",
-    url: "/pdfs/fee.pdf",
   },
 } as const;
 
 type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
 
-// Fetch PDF from public URL and parse it
-// On Vercel, we need to use fetch() to access static files since fs cannot access public/ directory
-async function fetchAndParsePDF(url: string, documentName: string): Promise<{ text: string; error?: string }> {
-  try {
-    // On Vercel, files in public/ are served as static assets
-    // We construct the full URL to fetch them
-    let baseUrl = "http://localhost:3000";
-    
-    if (process.env.VERCEL_URL) {
-      baseUrl = `https://${process.env.VERCEL_URL}`;
-    } else if (process.env.NEXT_PUBLIC_VERCEL_URL) {
-      baseUrl = `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`;
-    } else if (process.env.NEXT_PUBLIC_BASE_URL) {
-      baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-    }
+// Get base URL for fetching PDFs - works both locally and on Vercel
+function getBaseUrl(): string {
+  // Vercel provides VERCEL_URL automatically in production
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  // For local development
+  return "http://localhost:3000";
+}
 
-    const fullUrl = `${baseUrl}${url}`;
+// Fetch PDF from static serving and parse it
+// On Vercel, files in public/ are served as static assets at the root URL
+async function fetchAndParsePDF(filename: string, documentName: string): Promise<{ text: string; error?: string }> {
+  try {
+    const baseUrl = getBaseUrl();
+    const url = `${baseUrl}/pdfs/${filename}`;
     
-    // Add timeout wrapper for fetch
+    console.log(`[DEBUG] Fetching PDF from: ${url}`);
+    
+    // Use a timeout for the fetch request
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 seconds
     
-    const response = await fetch(fullUrl, {
+    const response = await fetch(url, {
       signal: controller.signal,
-      next: { revalidate: 3600 } // Cache for 1 hour at edge
     });
     
     clearTimeout(timeoutId);
-
+    
     if (!response.ok) {
-      throw new Error(`Failed to fetch PDF: HTTP ${response.status} - ${fullUrl}`);
+      throw new Error(`Failed to fetch PDF: HTTP ${response.status} from ${url}`);
     }
 
     const arrayBuffer = await response.arrayBuffer();
@@ -90,9 +88,10 @@ async function fetchAndParsePDF(url: string, documentName: string): Promise<{ te
       throw new Error(`Empty text extracted from ${documentName}`);
     }
 
+    console.log(`[DEBUG] Successfully parsed ${filename} - ${parsedText.length} chars`);
     return { text: parsedText };
   } catch (error) {
-    console.error(`Error fetching/parsing PDF ${documentName}:`, error);
+    console.error(`[ERROR] fetching/parsing PDF ${documentName}:`, error);
     return { 
       text: `Official document unavailable: ${documentName}.`,
       error: error instanceof Error ? error.message : "Unknown error"
@@ -101,7 +100,7 @@ async function fetchAndParsePDF(url: string, documentName: string): Promise<{ te
 }
 
 // Parse and index PDFs - now with caching and HTTP fetching
-async function buildIndex(documentName: string, url: string): Promise<IndexedChunk[]> {
+async function buildIndex(documentName: string, filename: string): Promise<IndexedChunk[]> {
   const cacheKey = documentName === OFFICIAL_DOCUMENTS.academic.name ? "academic" : "fee";
   
   // Return cached chunks if available
@@ -109,26 +108,26 @@ async function buildIndex(documentName: string, url: string): Promise<IndexedChu
     if (chunkCache[cacheKey]!.error) {
       return [new Document({
         pageContent: `Official document unavailable: ${documentName}.`,
-        metadata: { source: url, documentName },
+        metadata: { source: filename, documentName },
       }) as IndexedChunk];
     }
     return chunkCache[cacheKey]!.chunks as IndexedChunk[];
   }
 
-  const result = await fetchAndParsePDF(url, documentName);
+  const result = await fetchAndParsePDF(filename, documentName);
   
   if (result.error) {
     chunkCache[cacheKey] = { chunks: [], error: result.error };
     return [new Document({
       pageContent: `Official document unavailable: ${documentName}.`,
-      metadata: { source: url, documentName },
+      metadata: { source: filename, documentName },
     }) as IndexedChunk];
   }
 
   const docs = [
     new Document({
       pageContent: result.text,
-      metadata: { source: url, documentName },
+      metadata: { source: filename, documentName },
     }),
   ];
 
@@ -142,7 +141,7 @@ async function buildIndex(documentName: string, url: string): Promise<IndexedChu
     chunk.metadata = { ...chunk.metadata, documentName };
   });
 
-  console.log(`Loaded ${chunks.length} chunks from ${documentName}`);
+  console.log(`[DEBUG] Loaded ${chunks.length} chunks from ${documentName}`);
   
   // Cache the chunks
   chunkCache[cacheKey] = { chunks, error: undefined };
@@ -228,8 +227,8 @@ export async function POST(req: NextRequest) {
     if (!isGreeting(userMessage)) {
       // Build indexes on-demand with caching
       const [academicChunks, feeChunks] = await Promise.all([
-        buildIndex(OFFICIAL_DOCUMENTS.academic.name, OFFICIAL_DOCUMENTS.academic.url),
-        buildIndex(OFFICIAL_DOCUMENTS.fee.name, OFFICIAL_DOCUMENTS.fee.url),
+        buildIndex(OFFICIAL_DOCUMENTS.academic.name, OFFICIAL_DOCUMENTS.academic.filename),
+        buildIndex(OFFICIAL_DOCUMENTS.fee.name, OFFICIAL_DOCUMENTS.fee.filename),
       ]);
       const normalizedMessage = userMessage.toLowerCase().replace(/[^a-z0-9]+/g, " ");
       const academicDocs = normalizedMessage.includes("dean")
