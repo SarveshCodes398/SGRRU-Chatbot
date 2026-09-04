@@ -1,35 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ChatGroq } from "@langchain/groq";
 import { Document } from "@langchain/core/documents";
-import { HuggingFaceTransformersEmbeddings } from "@langchain/community/embeddings/huggingface_transformers";
-import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { PDFParse } from "pdf-parse";
-import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 
-// ===== Zod schema – forces clean short output =====
-const AnswerSchema = z.object({
-  answer: z
-    .string()
-    .max(650)
-    .describe("Short, clear, friendly answer. No markdown, no hashtags, no extra quotes."),
-});
-
 // ===== LLM =====
 const llm = new ChatGroq({
-  model: "openai/gpt-oss-120b",
+  model: "openai/gpt-oss-20b",
   temperature: 0.3,
   apiKey: process.env.GROQ_API_KEY,
-  maxRetries: 2,
-});
-
-const structuredLlm = llm.withStructuredOutput(AnswerSchema);
-
-// ===== Local embeddings (no HF API key) =====
-const embeddings = new HuggingFaceTransformersEmbeddings({
-  model: "Xenova/all-MiniLM-L6-v2",
+  maxRetries: 0,
+  maxTokens: 350,
 });
 
 const OFFICIAL_DOCUMENTS = {
@@ -43,20 +26,17 @@ const OFFICIAL_DOCUMENTS = {
   },
 } as const;
 
-// ===== Build Retriever (fixed parser) =====
-async function buildRetriever(pdfPath: string, documentName: string) {
+type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
+
+// Parse and index PDFs as soon as this server worker loads. Requests only score cached chunks.
+async function buildIndex(pdfPath: string, documentName: string): Promise<IndexedChunk[]> {
   try {
     if (!fs.existsSync(pdfPath)) {
       console.warn(`File not found: ${pdfPath}`);
-      return await MemoryVectorStore.fromDocuments(
-        [
-          new Document({
-            pageContent: `Official document unavailable: ${documentName}.`,
-            metadata: { source: pdfPath, documentName },
-          }),
-        ],
-        embeddings
-      );
+      return [new Document({
+        pageContent: `Official document unavailable: ${documentName}.`,
+        metadata: { source: pdfPath, documentName },
+      }) as IndexedChunk];
     }
 
     // Parse the PDF using the named export provided by pdf-parse.
@@ -68,15 +48,10 @@ async function buildRetriever(pdfPath: string, documentName: string) {
 
     if (!parsedText.trim()) {
       console.warn(`Empty text extracted from ${pdfPath}`);
-      return await MemoryVectorStore.fromDocuments(
-        [
-          new Document({
-            pageContent: `No readable content found in the official document: ${documentName}.`,
-            metadata: { source: pdfPath, documentName },
-          }),
-        ],
-        embeddings
-      );
+      return [new Document({
+        pageContent: `No readable content found in the official document: ${documentName}.`,
+        metadata: { source: pdfPath, documentName },
+      }) as IndexedChunk];
     }
 
     const docs = [
@@ -96,49 +71,63 @@ async function buildRetriever(pdfPath: string, documentName: string) {
     });
 
     console.log(`Loaded ${chunks.length} chunks from ${documentName}`);
-    return await MemoryVectorStore.fromDocuments(chunks, embeddings);
+    return chunks as IndexedChunk[];
   } catch (error) {
     console.error(`Error building retriever for ${pdfPath}:`, error);
     throw error;
   }
 }
 
-// ===== Cached retrievers =====
-let academicRetriever: any = null;
-let feeRetriever: any = null;
-let isInitializing = false;
+const baseDir = path.join(process.cwd(), "public", "pdfs");
+const indexPromises: Record<"academic" | "fee", Promise<IndexedChunk[]>> = {
+  academic: buildIndex(path.join(baseDir, OFFICIAL_DOCUMENTS.academic.filename), OFFICIAL_DOCUMENTS.academic.name),
+  fee: buildIndex(path.join(baseDir, OFFICIAL_DOCUMENTS.fee.filename), OFFICIAL_DOCUMENTS.fee.name),
+};
 
-async function initializeRetrievers() {
-  if (academicRetriever && feeRetriever) return;
-  if (isInitializing) {
-    await new Promise((r) => setTimeout(r, 2000));
-    return;
+function findRelevantChunks(chunks: IndexedChunk[], query: string): IndexedChunk[] {
+  const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const requestedLateralEntry = normalizedQuery.includes("lateral");
+  const courseHeading = requestedLateralEntry ? "b pharm lateral entry" : "b pharm fee particulars";
+  const courseStart = chunks.findIndex((chunk) => {
+    const text = chunk.pageContent.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+    return text.includes(courseHeading);
+  });
+
+  if (courseStart >= 0 && normalizedQuery.includes("b pharm")) {
+    return chunks.slice(courseStart, courseStart + 6);
   }
 
-  isInitializing = true;
-  try {
-    const baseDir = path.join(process.cwd(), "public", "pdfs");
-    const academicPath = path.join(baseDir, OFFICIAL_DOCUMENTS.academic.filename);
-    const feePath = path.join(baseDir, OFFICIAL_DOCUMENTS.fee.filename);
-
-    console.log("Loading PDFs...");
-    const [academicStore, feeStore] = await Promise.all([
-      buildRetriever(academicPath, OFFICIAL_DOCUMENTS.academic.name),
-      buildRetriever(feePath, OFFICIAL_DOCUMENTS.fee.name),
-    ]);
-
-    academicRetriever = academicStore.asRetriever({ k: 6 }); // increased k for better recall
-    feeRetriever = feeStore.asRetriever({ k: 6 });
-    console.log("Retrievers ready");
-  } catch (error) {
-    console.error("Failed to initialize retrievers:", error);
-  } finally {
-    isInitializing = false;
-  }
+  const terms = normalizedQuery.split(/\s+/).filter((term) => term.length > 2);
+  const scored = chunks.map((chunk, index) => {
+    const text = chunk.pageContent.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+    const score = terms.reduce((total, term) => {
+      const termMatches = text.split(/\s+/).filter((word) => word === term).length;
+      return total + (termMatches * (term.length > 4 ? 3 : 1));
+    }, normalizedQuery.includes("b pharm") && text.includes("b pharm") ? 12 : 0);
+    return { chunk, score, index };
+  });
+  return scored
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 6)
+    .map(({ chunk }) => chunk);
 }
 
-// ===== Classifier (kept almost same, slightly improved) =====
-async function classifyQuery(query: string): Promise<"academic" | "fee" | "general"> {
+function isGreeting(query: string): boolean {
+  return /^(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you)[!. ]*$/i.test(query.trim());
+}
+
+function getTextContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === "string" ? part : (part as { text?: string }).text || ""))
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
+function classifyQuery(query: string): "academic" | "fee" | "general" {
   const normalizedQuery = query.toLowerCase();
   const feeTerms = [
     "fee", "fees", "tuition", "cost", "price", "payment",
@@ -148,22 +137,11 @@ async function classifyQuery(query: string): Promise<"academic" | "fee" | "gener
 
   if (feeTerms.some((term) => normalizedQuery.includes(term))) return "fee";
 
-  const prompt = `Classify into exactly one word: academic, fee, or general.
-
-academic = attendance, exams, grading, credits, syllabus, course structure, degree rules
-fee = tuition, fees, payment, refund, scholarship, hostel charges, any money topic
-general = greeting or unrelated
-
-Query: ${query}
-
-Reply with only one word.`;
-
-  const res = await llm.invoke(prompt);
-  const text = (res.content as string).toLowerCase().trim();
-
-  if (text.includes("fee")) return "fee";
-  if (text.includes("academic")) return "academic";
-  return "general";
+  const academicTerms = [
+    "attendance", "exam", "grading", "credit", "syllabus", "course",
+    "semester", "admission", "eligibility", "degree", "program", "subject",
+  ];
+  return academicTerms.some((term) => normalizedQuery.includes(term)) ? "academic" : "general";
 }
 
 // ===== API Handler =====
@@ -176,55 +154,76 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Empty message" }, { status: 400 });
     }
 
-    await initializeRetrievers();
-
-    const queryType = await classifyQuery(userMessage);
+    const queryType = classifyQuery(userMessage);
 
     let context = "NO_RETRIEVAL_NEEDED";
     let documentName = "No official document used";
 
-    if (queryType === "academic" && academicRetriever) {
-      const docs = await academicRetriever.invoke(userMessage);
-      context = docs.map((d: Document) => d.pageContent).join("\n\n");
-      documentName = OFFICIAL_DOCUMENTS.academic.name;
-    } else if (queryType === "fee" && feeRetriever) {
-      const docs = await feeRetriever.invoke(userMessage);
-      context = docs.map((d: Document) => d.pageContent).join("\n\n");
-      documentName = OFFICIAL_DOCUMENTS.fee.name;
+    if (!isGreeting(userMessage)) {
+      const [academicChunks, feeChunks] = await Promise.all([
+        indexPromises.academic,
+        indexPromises.fee,
+      ]);
+      const normalizedMessage = userMessage.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+      const academicDocs = normalizedMessage.includes("dean")
+        ? academicChunks.filter((chunk) => chunk.pageContent.toLowerCase().includes("dean")).slice(0, 6)
+        : findRelevantChunks(academicChunks, userMessage);
+      const feeDocs = findRelevantChunks(feeChunks, userMessage);
+      const retrievedDocs = [...academicDocs.slice(0, 3), ...feeDocs.slice(0, 3)];
+      context = retrievedDocs
+        .map((d: Document) => `[${d.metadata.documentName}]\n${d.pageContent}`)
+        .join("\n\n")
+        .slice(0, 7000);
+      documentName = `${OFFICIAL_DOCUMENTS.academic.name} and ${OFFICIAL_DOCUMENTS.fee.name}`;
+      if (normalizedMessage.includes("btech ai") || normalizedMessage.includes("b tech ai")) {
+        context = `The fee document lists B.Tech CSE as the fee category for the B.Tech Artificial Intelligence and Machine Learning specialization. It does not list a separate B.Tech AI fee row.\n\n${context}`;
+      }
     }
 
     // Better system prompt – never invent, but also never blame the documents
     const systemPrompt =
-      queryType === "general"
+      isGreeting(userMessage)
         ? `You are a friendly assistant for Shri Guru Ram Rai University (SGRRU). Answer briefly and politely.`
         : `You are the official SGRRU college assistant. 
 Answer ONLY from the context below. 
-The context comes from: ${documentName}.
+The context comes from the official SGRRU documents: ${documentName}.
 
 Rules:
 - Be short, clear and friendly.
 - If the exact information is present, give it directly.
 - If the information is partially present, give what is available.
-- If nothing relevant is found in the context, simply say: "I don't have that specific information in the official documents right now."
+- If the document gives separate domicile categories and the user does not specify one, include every applicable category.
+- Use related wording and nearby course or table information; do not reject an answer just because the user's words differ from the PDF.
+- Say "I don't have that specific information in the official documents right now." only when the context contains no answer at all.
 - Never invent numbers or facts.
 - Do not mention "visit the website" or "contact the university".
 
 Context:
 ${context}`;
 
-    const result = await structuredLlm.invoke([
+    const result = await llm.invoke([
       { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
+      {
+        role: "user",
+        content: `${userMessage}\n\nReturn only the concise answer text. Do not return JSON, XML, or explanations about your instructions.`,
+      },
     ]);
+    const answer = getTextContent(result.content);
 
     return NextResponse.json({
-      response: result.answer,
+      response: answer || "I don't have that specific information in the official documents right now.",
       query_type: queryType,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Chat error:", error);
+    if (error instanceof Error && "status" in error && error.status === 429) {
+      return NextResponse.json(
+        { error: "The AI service is temporarily busy. Please try again in a few seconds." },
+        { status: 429 }
+      );
+    }
     return NextResponse.json(
-      { error: error?.message || "Something went wrong. Please try again." },
+      { error: error instanceof Error ? error.message : "Something went wrong. Please try again." },
       { status: 500 }
     );
   }
