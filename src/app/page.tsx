@@ -40,24 +40,33 @@ export default function Home() {
       });
 
       clearTimeout(timeout);
-      const data = await res.json();
+      const responseText = await res.text();
+      let data: { response?: string; error?: string } = {};
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        data.error = responseText || `Server returned HTTP ${res.status}.`;
+      }
 
-      if (res.ok && data.response) {
-        setMessages((prev) => [...prev, { role: "ai", content: data.response }]);
+      const response = data.response;
+      if (res.ok && response) {
+        setMessages((prev) => [...prev, { role: "ai", content: response }]);
       } else {
         setMessages((prev) => [
           ...prev,
           {
             role: "ai",
-            content: data.error || "Sorry, something went wrong. Please try again.",
+            content: data.error || `Request failed with HTTP ${res.status}.`,
           },
         ]);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       const msg =
-        error.name === "AbortError"
+        error instanceof DOMException && error.name === "AbortError"
           ? "Request timed out. Please try a shorter question."
-          : "Network error. Please check your connection and try again.";
+          : error instanceof Error
+            ? `Unable to reach the chat service: ${error.message}`
+            : "Unable to reach the chat service. Please try again.";
       setMessages((prev) => [...prev, { role: "ai", content: msg }]);
     } finally {
       setIsLoading(false);

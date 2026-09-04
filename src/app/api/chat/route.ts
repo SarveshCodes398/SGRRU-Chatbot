@@ -6,6 +6,9 @@ import { PDFParse } from "pdf-parse";
 import * as fs from "fs";
 import * as path from "path";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 // ===== LLM =====
 const llm = new ChatGroq({
   model: "openai/gpt-oss-20b",
@@ -147,6 +150,10 @@ function classifyQuery(query: string): "academic" | "fee" | "general" {
 // ===== API Handler =====
 export async function POST(req: NextRequest) {
   try {
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json({ error: "GROQ_API_KEY is not configured on the server." }, { status: 500 });
+    }
+
     const data = await req.json();
     const userMessage = (data.message || "").trim();
 
