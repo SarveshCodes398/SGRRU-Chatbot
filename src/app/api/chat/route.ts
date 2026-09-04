@@ -3,8 +3,12 @@ import { ChatGroq } from "@langchain/groq";
 import { Document } from "@langchain/core/documents";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { PDFParse } from "pdf-parse";
-import * as fs from "fs";
-import * as path from "path";
+
+// In-memory cache for parsed PDF chunks to avoid re-parsing on every request
+let chunkCache: Record<"academic" | "fee", { chunks: any[]; error?: string } | null> = {
+  academic: null,
+  fee: null,
+};
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -29,70 +33,122 @@ const OFFICIAL_DOCUMENTS = {
   academic: {
     name: "SGRRU Official Academic Brochure 2026-27",
     filename: "brochure.pdf",
+    url: "/pdfs/brochure.pdf",
   },
   fee: {
     name: "SGRRU Official Fee Structure 2026-27",
     filename: "fee.pdf",
+    url: "/pdfs/fee.pdf",
   },
 } as const;
 
 type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
 
-// Parse and index PDFs as soon as this server worker loads. Requests only score cached chunks.
-async function buildIndex(pdfPath: string, documentName: string): Promise<IndexedChunk[]> {
+// Fetch PDF from public URL and parse it
+// On Vercel, we need to use fetch() to access static files since fs cannot access public/ directory
+async function fetchAndParsePDF(url: string, documentName: string): Promise<{ text: string; error?: string }> {
   try {
-    if (!fs.existsSync(pdfPath)) {
-      console.warn(`File not found: ${pdfPath}`);
-      return [new Document({
-        pageContent: `Official document unavailable: ${documentName}.`,
-        metadata: { source: pdfPath, documentName },
-      }) as IndexedChunk];
+    // On Vercel, files in public/ are served as static assets
+    // We construct the full URL to fetch them
+    let baseUrl = "http://localhost:3000";
+    
+    if (process.env.VERCEL_URL) {
+      baseUrl = `https://${process.env.VERCEL_URL}`;
+    } else if (process.env.NEXT_PUBLIC_VERCEL_URL) {
+      baseUrl = `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`;
+    } else if (process.env.NEXT_PUBLIC_BASE_URL) {
+      baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
     }
 
-    // Parse the PDF using the named export provided by pdf-parse.
-    const dataBuffer = await fs.promises.readFile(pdfPath);
-    const parser = new PDFParse({ data: dataBuffer });
+    const fullUrl = `${baseUrl}${url}`;
+    
+    // Add timeout wrapper for fetch
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
+    const response = await fetch(fullUrl, {
+      signal: controller.signal,
+      next: { revalidate: 3600 } // Cache for 1 hour at edge
+    });
+    
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch PDF: HTTP ${response.status} - ${fullUrl}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    
+    const parser = new PDFParse({ data: buffer });
     const pdfData = await parser.getText();
     await parser.destroy();
+    
     const parsedText = pdfData.text || "";
-
+    
     if (!parsedText.trim()) {
-      console.warn(`Empty text extracted from ${pdfPath}`);
-      return [new Document({
-        pageContent: `No readable content found in the official document: ${documentName}.`,
-        metadata: { source: pdfPath, documentName },
-      }) as IndexedChunk];
+      throw new Error(`Empty text extracted from ${documentName}`);
     }
 
-    const docs = [
-      new Document({
-        pageContent: parsedText,
-        metadata: { source: pdfPath, documentName },
-      }),
-    ];
-
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 1000,      // slightly larger chunks work better for fee tables
-      chunkOverlap: 150,
-    });
-    const chunks = await splitter.splitDocuments(docs);
-    chunks.forEach((chunk) => {
-      chunk.metadata = { ...chunk.metadata, documentName };
-    });
-
-    console.log(`Loaded ${chunks.length} chunks from ${documentName}`);
-    return chunks as IndexedChunk[];
+    return { text: parsedText };
   } catch (error) {
-    console.error(`Error building retriever for ${pdfPath}:`, error);
-    throw error;
+    console.error(`Error fetching/parsing PDF ${documentName}:`, error);
+    return { 
+      text: `Official document unavailable: ${documentName}.`,
+      error: error instanceof Error ? error.message : "Unknown error"
+    };
   }
 }
 
-const baseDir = path.join(process.cwd(), "public", "pdfs");
-const indexPromises: Record<"academic" | "fee", Promise<IndexedChunk[]>> = {
-  academic: buildIndex(path.join(baseDir, OFFICIAL_DOCUMENTS.academic.filename), OFFICIAL_DOCUMENTS.academic.name),
-  fee: buildIndex(path.join(baseDir, OFFICIAL_DOCUMENTS.fee.filename), OFFICIAL_DOCUMENTS.fee.name),
-};
+// Parse and index PDFs - now with caching and HTTP fetching
+async function buildIndex(documentName: string, url: string): Promise<IndexedChunk[]> {
+  const cacheKey = documentName === OFFICIAL_DOCUMENTS.academic.name ? "academic" : "fee";
+  
+  // Return cached chunks if available
+  if (chunkCache[cacheKey]) {
+    if (chunkCache[cacheKey]!.error) {
+      return [new Document({
+        pageContent: `Official document unavailable: ${documentName}.`,
+        metadata: { source: url, documentName },
+      }) as IndexedChunk];
+    }
+    return chunkCache[cacheKey]!.chunks as IndexedChunk[];
+  }
+
+  const result = await fetchAndParsePDF(url, documentName);
+  
+  if (result.error) {
+    chunkCache[cacheKey] = { chunks: [], error: result.error };
+    return [new Document({
+      pageContent: `Official document unavailable: ${documentName}.`,
+      metadata: { source: url, documentName },
+    }) as IndexedChunk];
+  }
+
+  const docs = [
+    new Document({
+      pageContent: result.text,
+      metadata: { source: url, documentName },
+    }),
+  ];
+
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 1000,
+    chunkOverlap: 150,
+  });
+  
+  const chunks = await splitter.splitDocuments(docs);
+  chunks.forEach((chunk) => {
+    chunk.metadata = { ...chunk.metadata, documentName };
+  });
+
+  console.log(`Loaded ${chunks.length} chunks from ${documentName}`);
+  
+  // Cache the chunks
+  chunkCache[cacheKey] = { chunks, error: undefined };
+  
+  return chunks as IndexedChunk[];
+}
 
 function findRelevantChunks(chunks: IndexedChunk[], query: string): IndexedChunk[] {
   const normalizedQuery = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -170,9 +226,10 @@ export async function POST(req: NextRequest) {
     let documentName = "No official document used";
 
     if (!isGreeting(userMessage)) {
+      // Build indexes on-demand with caching
       const [academicChunks, feeChunks] = await Promise.all([
-        indexPromises.academic,
-        indexPromises.fee,
+        buildIndex(OFFICIAL_DOCUMENTS.academic.name, OFFICIAL_DOCUMENTS.academic.url),
+        buildIndex(OFFICIAL_DOCUMENTS.fee.name, OFFICIAL_DOCUMENTS.fee.url),
       ]);
       const normalizedMessage = userMessage.toLowerCase().replace(/[^a-z0-9]+/g, " ");
       const academicDocs = normalizedMessage.includes("dean")
