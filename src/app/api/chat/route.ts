@@ -9,14 +9,21 @@ import * as path from "path";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// ===== LLM =====
-const llm = new ChatGroq({
-  model: "openai/gpt-oss-20b",
-  temperature: 0.3,
-  apiKey: process.env.GROQ_API_KEY,
-  maxRetries: 0,
-  maxTokens: 350,
-});
+// Create the client per request so deployment environment variables are read at runtime.
+function getLlm(): ChatGroq {
+  const apiKey = process.env.GROQ_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("GROQ_API_KEY is not configured on the server.");
+  }
+
+  return new ChatGroq({
+    model: "openai/gpt-oss-20b",
+    temperature: 0.3,
+    apiKey,
+    maxRetries: 0,
+    maxTokens: 350,
+  });
+}
 
 const OFFICIAL_DOCUMENTS = {
   academic: {
@@ -150,10 +157,6 @@ function classifyQuery(query: string): "academic" | "fee" | "general" {
 // ===== API Handler =====
 export async function POST(req: NextRequest) {
   try {
-    if (!process.env.GROQ_API_KEY) {
-      return NextResponse.json({ error: "GROQ_API_KEY is not configured on the server." }, { status: 500 });
-    }
-
     const data = await req.json();
     const userMessage = (data.message || "").trim();
 
@@ -208,7 +211,7 @@ Rules:
 Context:
 ${context}`;
 
-    const result = await llm.invoke([
+    const result = await getLlm().invoke([
       { role: "system", content: systemPrompt },
       {
         role: "user",
@@ -223,7 +226,25 @@ ${context}`;
     });
   } catch (error: unknown) {
     console.error("Chat error:", error);
-    if (error instanceof Error && "status" in error && error.status === 429) {
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? (error as { status?: number }).status
+      : undefined;
+
+    if (error instanceof Error && error.message === "GROQ_API_KEY is not configured on the server.") {
+      return NextResponse.json(
+        { error: "The chat service is not configured. Add GROQ_API_KEY to the deployment environment." },
+        { status: 503 }
+      );
+    }
+
+    if (status === 401 || status === 403) {
+      return NextResponse.json(
+        { error: "The chat service credentials were rejected. Update GROQ_API_KEY in the deployment environment." },
+        { status: 503 }
+      );
+    }
+
+    if (status === 429) {
       return NextResponse.json(
         { error: "The AI service is temporarily busy. Please try again in a few seconds." },
         { status: 429 }
