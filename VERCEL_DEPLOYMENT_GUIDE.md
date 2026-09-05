@@ -2,21 +2,21 @@
 
 ## 🚀 Quick Fix Summary
 
-Your app was failing on Vercel because the API route (`src/app/api/chat/route.ts`) was using Node.js `fs` module to read PDF files from the `public/pdfs/` directory. **Vercel's serverless functions cannot access the filesystem for static files** - they must be fetched via HTTP.
+The API now uses pre-extracted document chunks from `src/data/official-documents.json`. PDF parsing happens only in the local extraction script, so the Vercel function does not load PDF.js, `@napi-rs/canvas`, or browser DOM APIs such as `DOMMatrix`.
 
 ## ✅ Changes Made
 
 ### 1. Updated `src/app/api/chat/route.ts`
-- Replaced `fs.readFile()` with `fetch()` to access PDFs as static assets
-- Added in-memory caching to avoid re-parsing PDFs on every request
-- Added proper timeout handling for PDF fetching
-- Improved error handling and logging
+- Removed request-time PDF parsing and static PDF fetching
+- Loads the committed, pre-chunked official document data
+- Keeps the Vercel function free of native PDF dependencies
 
 ### 2. Updated `package.json`
-- Removed unused `faiss-node` dependency (reduces bundle size)
+- Added `npm run extract:pdf` for refreshing document data after PDF changes
+- Keeps `pdf-parse` as a development-only extraction tool
 
 ### 3. Updated `next.config.ts`
-- Kept `serverExternalPackages` for `pdf-parse` and `pdfjs-dist`
+- Removed PDF native package externalization because the API no longer imports it
 
 ## 📋 Deployment Checklist
 
@@ -71,8 +71,7 @@ The chat API is intentionally server-side. `GROQ_API_KEY` must remain a Vercel s
    | Error | Solution |
    |-------|----------|
    | `GROQ_API_KEY is not configured` | Add the environment variable in Vercel settings |
-   | `Failed to fetch PDF` | Ensure PDF files exist in `public/pdfs/` and are committed |
-   | `Request timed out` | Check if PDF files are too large (>10MB) |
+   | `DOMMatrix is not defined` | Redeploy the latest commit; the API no longer parses PDFs at runtime |
    | `Module not found` | Run `npm install` and ensure all dependencies are installed |
 
 3. **Check PDF Files**
@@ -85,6 +84,9 @@ The chat API is intentionally server-side. `GROQ_API_KEY` must remain a Vercel s
 ```bash
 # Install dependencies
 npm install
+
+# Refresh the committed document index only after changing a source PDF
+npm run extract:pdf
 
 # Start development server
 npm run dev
