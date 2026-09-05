@@ -1,4 +1,5 @@
 import React from 'react';
+import Image from 'next/image';
 
 const Header = () => {
   return (
@@ -6,7 +7,7 @@ const Header = () => {
       <div className="container mx-auto px-4 py-4 flex justify-between items-center">
         <div className="logo">
           <a href="https://www.sgrru.ac.in/">
-            <img src="/images/logo.png" alt="SGRR University Logo" className="h-12 w-auto" />
+            <Image src="/images/logo.png" alt="SGRR University Logo" width={180} height={60} className="h-12 w-auto" />
           </a>
         </div>
         

@@ -4,8 +4,10 @@ import { Document } from "@langchain/core/documents";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { PDFParse } from "pdf-parse";
 
+type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
+
 // In-memory cache for parsed PDF chunks to avoid re-parsing on every request
-let chunkCache: Record<"academic" | "fee", { chunks: any[]; error?: string } | null> = {
+const chunkCache: Record<"academic" | "fee", { chunks: IndexedChunk[]; error?: string } | null> = {
   academic: null,
   fee: null,
 };
@@ -39,8 +41,6 @@ const OFFICIAL_DOCUMENTS = {
     filename: "fee.pdf",
   },
 } as const;
-
-type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
 
 // Fetch PDF from static serving and parse it
 // On Vercel, files in public/ are served as static assets at the root URL
@@ -129,7 +129,7 @@ async function buildIndex(baseUrl: string, documentName: string, filename: strin
     chunkOverlap: 150,
   });
   
-  const chunks = await splitter.splitDocuments(docs);
+  const chunks = await splitter.splitDocuments(docs) as IndexedChunk[];
   chunks.forEach((chunk) => {
     chunk.metadata = { ...chunk.metadata, documentName };
   });
