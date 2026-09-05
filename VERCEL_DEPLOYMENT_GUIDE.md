@@ -28,6 +28,17 @@ Your app was failing on Vercel because the API route (`src/app/api/chat/route.ts
    - Make sure it's available for Production, Preview, and Development environments
    - ⚠️ **Never commit this to GitHub!**
 
+### Make the bot publicly accessible
+
+If the deployed site or `/api/chat` returns `401` before reaching the app, disable deployment authentication for the public deployment:
+
+1. Open the Vercel project settings.
+2. Open **Deployment Protection**.
+3. Disable **Vercel Authentication** (and any password or protection option enabled for the deployment).
+4. Redeploy the project.
+
+The chat API is intentionally server-side. `GROQ_API_KEY` must remain a Vercel server environment variable and must not be exposed as a `NEXT_PUBLIC_` variable.
+
 ### Steps to Deploy
 
 1. **Push changes to GitHub**

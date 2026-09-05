@@ -42,21 +42,14 @@ const OFFICIAL_DOCUMENTS = {
 
 type IndexedChunk = Document & { metadata: { documentName: string; source: string } };
 
-// Get base URL for fetching PDFs - works both locally and on Vercel
-function getBaseUrl(): string {
-  // Vercel provides VERCEL_URL automatically in production
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-  // For local development
-  return "http://localhost:3000";
-}
-
 // Fetch PDF from static serving and parse it
 // On Vercel, files in public/ are served as static assets at the root URL
-async function fetchAndParsePDF(filename: string, documentName: string): Promise<{ text: string; error?: string }> {
+async function fetchAndParsePDF(
+  baseUrl: string,
+  filename: string,
+  documentName: string,
+): Promise<{ text: string; error?: string }> {
   try {
-    const baseUrl = getBaseUrl();
     const url = `${baseUrl}/pdfs/${filename}`;
     
     console.log(`[DEBUG] Fetching PDF from: ${url}`);
@@ -100,7 +93,7 @@ async function fetchAndParsePDF(filename: string, documentName: string): Promise
 }
 
 // Parse and index PDFs - now with caching and HTTP fetching
-async function buildIndex(documentName: string, filename: string): Promise<IndexedChunk[]> {
+async function buildIndex(baseUrl: string, documentName: string, filename: string): Promise<IndexedChunk[]> {
   const cacheKey = documentName === OFFICIAL_DOCUMENTS.academic.name ? "academic" : "fee";
   
   // Return cached chunks if available
@@ -114,7 +107,7 @@ async function buildIndex(documentName: string, filename: string): Promise<Index
     return chunkCache[cacheKey]!.chunks as IndexedChunk[];
   }
 
-  const result = await fetchAndParsePDF(filename, documentName);
+  const result = await fetchAndParsePDF(baseUrl, filename, documentName);
   
   if (result.error) {
     chunkCache[cacheKey] = { chunks: [], error: result.error };
@@ -214,6 +207,7 @@ export async function POST(req: NextRequest) {
   try {
     const data = await req.json();
     const userMessage = (data.message || "").trim();
+    const baseUrl = new URL(req.url).origin;
 
     if (!userMessage) {
       return NextResponse.json({ error: "Empty message" }, { status: 400 });
@@ -227,8 +221,8 @@ export async function POST(req: NextRequest) {
     if (!isGreeting(userMessage)) {
       // Build indexes on-demand with caching
       const [academicChunks, feeChunks] = await Promise.all([
-        buildIndex(OFFICIAL_DOCUMENTS.academic.name, OFFICIAL_DOCUMENTS.academic.filename),
-        buildIndex(OFFICIAL_DOCUMENTS.fee.name, OFFICIAL_DOCUMENTS.fee.filename),
+        buildIndex(baseUrl, OFFICIAL_DOCUMENTS.academic.name, OFFICIAL_DOCUMENTS.academic.filename),
+        buildIndex(baseUrl, OFFICIAL_DOCUMENTS.fee.name, OFFICIAL_DOCUMENTS.fee.filename),
       ]);
       const normalizedMessage = userMessage.toLowerCase().replace(/[^a-z0-9]+/g, " ");
       const academicDocs = normalizedMessage.includes("dean")
