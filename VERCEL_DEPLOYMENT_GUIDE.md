@@ -2,31 +2,44 @@
 
 ## 🚀 Quick Fix Summary
 
-The API now uses pre-extracted document chunks from `src/data/official-documents.json`. PDF parsing happens only in the local extraction script, so the Vercel function does not load PDF.js, `@napi-rs/canvas`, or browser DOM APIs such as `DOMMatrix`.
+The Python API reads and splits the official PDFs from `backend/pdfs`. Vercel only proxies requests and does not parse PDFs or build embeddings.
 
 ## ✅ Changes Made
 
+The frontend remains on Vercel and the RAG backend runs as a separate FastAPI service. Vercel's `/api/chat` endpoint proxies requests to that Python service.
+
 ### 1. Updated `src/app/api/chat/route.ts`
-- Removed request-time PDF parsing and static PDF fetching
-- Loads the committed, pre-chunked official document data
-- Keeps the Vercel function free of native PDF dependencies
+- Proxies chat requests to `PYTHON_BACKEND_URL`
+- Keeps the Python URL and AI keys server-side
 
-### 2. Updated `package.json`
-- Added `npm run extract:pdf` for refreshing document data after PDF changes
-- Keeps `pdf-parse` as a development-only extraction tool
+### 2. Added `backend/main.py`
+- Runs FastAPI, FAISS semantic search, Hugging Face embeddings, and Groq structured output
+- Reads `backend/pdfs/brochure.pdf` and `backend/pdfs/fee.pdf` at backend startup
 
-### 3. Updated `next.config.ts`
+### 3. Updated `package.json`
+- Removed the obsolete Node PDF extraction command and dependency
+
+### 4. Updated `next.config.ts`
 - Removed PDF native package externalization because the API no longer imports it
 
 ## 📋 Deployment Checklist
 
 ### Required Environment Variables on Vercel
 
-1. **GROQ_API_KEY** (Required)
+1. **PYTHON_BACKEND_URL** (Required on Vercel)
+   - The public URL of the deployed Python service, for example `https://sgrru-chatbot-api.onrender.com`
+
+2. **GROQ_API_KEY** (Required on the Python service)
    - Go to [Vercel Dashboard](https://vercel.com/) → Your Project → Settings → Environment Variables
    - Add `GROQ_API_KEY` with your API key from Groq
    - Make sure it's available for Production, Preview, and Development environments
-   - ⚠️ **Never commit this to GitHub!**
+   - Never commit this to GitHub.
+
+3. **HF_TOKEN** (Required on the Python service)
+   - A Hugging Face token with inference permissions.
+
+4. **FRONTEND_URL** (Required on the Python service)
+   - Your Vercel URL, for example `https://your-project.vercel.app`.
 
 ### Make the bot publicly accessible
 
@@ -48,13 +61,20 @@ The chat API is intentionally server-side. `GROQ_API_KEY` must remain a Vercel s
    git push origin main
    ```
 
-2. **Deploy on Vercel**
+2. **Deploy the Python backend**
+   - Create a Render or Railway web service from this repository.
+   - Set the root directory to `backend`.
+   - Build command: `pip install -r requirements.txt`.
+   - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+   - Add `GROQ_API_KEY`, `HF_TOKEN`, and `FRONTEND_URL`.
+
+3. **Deploy on Vercel**
    - Go to your Vercel project dashboard
    - The deployment should trigger automatically
    - If not, manually trigger a redeploy
 
-3. **Verify Environment Variables**
-   - After deployment, check that `GROQ_API_KEY` is set in Project Settings
+4. **Verify Environment Variables**
+   - After deployment, check that `PYTHON_BACKEND_URL` is set in Project Settings
    - The variable should show as "Configured" in the deployment logs
 
 ## 🔍 Troubleshooting
@@ -75,18 +95,14 @@ The chat API is intentionally server-side. `GROQ_API_KEY` must remain a Vercel s
    | `Module not found` | Run `npm install` and ensure all dependencies are installed |
 
 3. **Check PDF Files**
-   - Ensure both `public/pdfs/brochure.pdf` and `public/pdfs/fee.pdf` exist
-   - Files should be less than 10MB each (Vercel has size limits)
-   - Files should be committed to Git (not in .gitignore)
+   - Ensure both `backend/pdfs/brochure.pdf` and `backend/pdfs/fee.pdf` exist
+   - Files must be included in the Python service repository
 
 ### Testing Locally Before Deploying
 
 ```bash
 # Install dependencies
 npm install
-
-# Refresh the committed document index only after changing a source PDF
-npm run extract:pdf
 
 # Start development server
 npm run dev

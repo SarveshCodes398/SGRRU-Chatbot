@@ -37,4 +37,15 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 ### Required deployment variable
 
-The chat API requires a server-side `GROQ_API_KEY`. Add it in Vercel under **Project Settings > Environment Variables** for the environments you deploy to, then redeploy. Keep `.env.local` local and never commit the key.
+The chat API requires these server-side variables:
+
+- `GROQ_API_KEY` for the Groq response model.
+- `HF_TOKEN` for semantic embeddings. Create a Hugging Face access token with inference permissions.
+
+The Python API reads PDFs from `backend/pdfs`, splits their text, and builds an in-memory vector index on demand. Embeddings are not committed to the repository. Add variables in the appropriate Vercel or Python-service environment, then redeploy. Keep `.env` files local and never commit either key.
+
+## Python backend deployment
+
+The chat logic is in `backend/main.py`, and the source PDFs are in `backend/pdfs`. Deploy the `backend` directory as a FastAPI web service on Render, Railway, or another Python host with `GROQ_API_KEY`, `HF_TOKEN`, and `FRONTEND_URL` configured. Use `pip install -r requirements.txt` as the build command and `uvicorn main:app --host 0.0.0.0 --port $PORT` as the start command.
+
+On Vercel, add `PYTHON_BACKEND_URL` with the deployed Python service URL. The Next.js `/api/chat` route proxies requests to Python, so the existing frontend does not need a change. Locally, start the Python service from `backend` and set `PYTHON_BACKEND_URL=http://localhost:8000` in `.env.local`, then run `npm run dev`.

@@ -9,6 +9,10 @@ interface Message {
   content: string;
 }
 
+function cleanAnswerText(text: string): string {
+  return text.replace(/\*\*/g, "");
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -40,25 +44,45 @@ export default function Home() {
       });
 
       clearTimeout(timeout);
-      const responseText = await res.text();
-      let data: { response?: string; error?: string } = {};
-      try {
-        data = JSON.parse(responseText);
-      } catch {
-        data.error = responseText || `Server returned HTTP ${res.status}.`;
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({ error: `Request failed with HTTP ${res.status}.` }));
+        throw new Error(data.error || `Request failed with HTTP ${res.status}.`);
       }
 
-      const response = data.response;
-      if (res.ok && response) {
-        setMessages((prev) => [...prev, { role: "ai", content: response }]);
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "ai",
-            content: data.error || `Request failed with HTTP ${res.status}.`,
-          },
-        ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let answer = "";
+      setMessages((prev) => [...prev, { role: "ai", content: "" }]);
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+
+        for (const event of events) {
+          const line = event.split("\n").find((item) => item.startsWith("data: "));
+          if (!line) continue;
+          const payload = JSON.parse(line.slice(6));
+          if (payload.type === "status") {
+            setMessages((prev) => {
+              const next = [...prev];
+              next[next.length - 1] = { role: "ai", content: cleanAnswerText(payload.text) };
+              return next;
+            });
+          }
+          if (payload.type === "token") {
+            answer += cleanAnswerText(payload.text);
+            setMessages((prev) => {
+              const next = [...prev];
+              next[next.length - 1] = { role: "ai", content: answer };
+              return next;
+            });
+          }
+          if (payload.type === "error") throw new Error(payload.error);
+        }
+        if (done) break;
       }
     } catch (error: unknown) {
       const msg =

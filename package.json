@@ -4,7 +4,6 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "extract:pdf": "node scripts/extract-pdf-text.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -32,7 +31,6 @@
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
-    "pdf-parse": "^2.4.5",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
