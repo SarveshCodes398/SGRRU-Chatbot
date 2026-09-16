@@ -7,13 +7,7 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 
-const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
-const PINECONE_DIMENSION = 1024;
-
-const toPineconeVector = (vector: number[]) => [
-  ...vector,
-  ...new Array(PINECONE_DIMENSION - vector.length).fill(0),
-];
+const EMBEDDING_MODEL = 'Xenova/bge-large-en-v1.5';
 
 const toPineconeMetadata = (metadata: Record<string, unknown>, text: string) => ({
   source: typeof metadata.source === 'string' ? metadata.source : 'university-pdf',
@@ -82,7 +76,7 @@ async function ingest() {
     const namespace = pineconeIndex.namespace('');
     const records = splitDocs.map((doc, index) => ({
       id: `sgrr-${index}`,
-      values: toPineconeVector(vectors[index]),
+      values: vectors[index],
       metadata: toPineconeMetadata(doc.metadata, doc.pageContent),
     }));
 

@@ -8,13 +8,7 @@ import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
 
-const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
-const PINECONE_DIMENSION = 1024;
-
-const toPineconeVector = (vector: number[]) => [
-  ...vector,
-  ...new Array(PINECONE_DIMENSION - vector.length).fill(0),
-];
+const EMBEDDING_MODEL = 'Xenova/bge-large-en-v1.5';
 
 const formatDocumentsAsString = (docs: any[]) => docs.map((doc) => doc.pageContent).join('\n\n');
 let pineconeStore: PineconeStore | null = null;
@@ -30,10 +24,6 @@ async function initVectorStore() {
   const embeddings = new HuggingFaceTransformersEmbeddings({
     model: EMBEDDING_MODEL,
   });
-
-  const originalEmbedQuery = embeddings.embedQuery.bind(embeddings);
-  embeddings.embedQuery = async (query: string) =>
-    toPineconeVector(await originalEmbedQuery(query));
 
   pineconeStore = await PineconeStore.fromExistingIndex(embeddings, {
     pineconeIndex,
@@ -76,7 +66,7 @@ export async function POST(req: NextRequest) {
 
     const llm = new ChatGroq({
       apiKey: process.env.GROQ_API_KEY!,
-      model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+      model: process.env.GROQ_MODEL || "gemma2-9b-it",
       temperature: 0.2,
       maxTokens: 500,
     });
