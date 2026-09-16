@@ -2,12 +2,10 @@
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Pinecone } from '@pinecone-database/pinecone';
-import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/huggingface_transformers';
+import { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
-
-const EMBEDDING_MODEL = 'Xenova/bge-large-en-v1.5';
 
 const toPineconeMetadata = (metadata: Record<string, unknown>, text: string) => ({
   source: typeof metadata.source === 'string' ? metadata.source : 'university-pdf',
@@ -23,8 +21,10 @@ async function ingest() {
     const pineconeApiKey = process.env.PINECONE_API_KEY;
     const pineconeIndexName = process.env.PINECONE_INDEX;
 
-    if (!pineconeApiKey || !pineconeIndexName) {
-      throw new Error('Please ensure PINECONE_API_KEY and PINECONE_INDEX are set in .env or .env.local');
+    const hfToken = process.env.HF_TOKEN;
+
+    if (!pineconeApiKey || !pineconeIndexName || !hfToken) {
+      throw new Error('Please ensure PINECONE_API_KEY, PINECONE_INDEX, and HF_TOKEN are set in .env or .env.local');
     }
 
     console.log('Loading PDFs...');
@@ -65,8 +65,9 @@ async function ingest() {
     
     const pineconeIndex = pinecone.Index(pineconeIndexName);
 
-    const embeddings = new HuggingFaceTransformersEmbeddings({
-      model: EMBEDDING_MODEL,
+    const embeddings = new HuggingFaceInferenceEmbeddings({
+      apiKey: hfToken,
+      model: 'BAAI/bge-large-en-v1.5',
     });
 
     console.log('Creating embeddings...');

@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { PineconeStore } from '@langchain/pinecone';
-import { HuggingFaceTransformersEmbeddings } from '@langchain/community/embeddings/huggingface_transformers';
+import { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
 import { ChatGroq } from '@langchain/groq';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
-
-const EMBEDDING_MODEL = 'Xenova/bge-large-en-v1.5';
 
 const formatDocumentsAsString = (docs: any[]) => docs.map((doc) => doc.pageContent).join('\n\n');
 let pineconeStore: PineconeStore | null = null;
@@ -21,8 +19,9 @@ async function initVectorStore() {
   });
   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
 
-  const embeddings = new HuggingFaceTransformersEmbeddings({
-    model: EMBEDDING_MODEL,
+  const embeddings = new HuggingFaceInferenceEmbeddings({
+    apiKey: process.env.HF_TOKEN!,
+    model: 'BAAI/bge-large-en-v1.5',
   });
 
   pineconeStore = await PineconeStore.fromExistingIndex(embeddings, {
@@ -66,7 +65,7 @@ export async function POST(req: NextRequest) {
 
     const llm = new ChatGroq({
       apiKey: process.env.GROQ_API_KEY!,
-      model: process.env.GROQ_MODEL || "gemma2-9b-it",
+      model: process.env.GROQ_MODEL || "openai/gpt-oss-20b",
       temperature: 0.2,
       maxTokens: 500,
     });
