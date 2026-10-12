@@ -7,11 +7,13 @@ import { StringOutputParser } from '@langchain/core/output_parsers';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
-import { LocalBgeEmbeddings } from '@/lib/embeddings';
+import { createUniversityEmbeddings, UNIVERSITY_NAMESPACE } from '@/lib/embeddings';
 import { getPineconeIndex } from '@/lib/pineconeIndex';
 
 const formatDocumentsAsString = (docs: Document[]) => docs.map((doc) => doc.pageContent).join('\n\n');
 let pineconeStore: PineconeStore | null = null;
+
+export const maxDuration = 60;
 
 async function initVectorStore() {
   if (pineconeStore) return pineconeStore;
@@ -24,10 +26,11 @@ async function initVectorStore() {
     apiKey: process.env.PINECONE_API_KEY,
   });
   const pineconeIndex = getPineconeIndex(pinecone, process.env.PINECONE_INDEX);
-  const embeddings = new LocalBgeEmbeddings();
+  const embeddings = createUniversityEmbeddings();
 
   pineconeStore = await PineconeStore.fromExistingIndex(embeddings, {
     pineconeIndex,
+    namespace: UNIVERSITY_NAMESPACE,
   });
 
   return pineconeStore;
@@ -68,9 +71,12 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (!process.env.GROQ_API_KEY) {
+    if (!process.env.GROQ_API_KEY || !process.env.GOOGLE_API_KEY) {
       return NextResponse.json(
-        { error: 'The assistant is not configured yet. Please contact the site administrator.', code: 'CONFIGURATION_ERROR' },
+        {
+          error: 'The assistant is missing a required API key. Set GROQ_API_KEY and GOOGLE_API_KEY in the deployment environment.',
+          code: 'CONFIGURATION_ERROR',
+        },
         { status: 503 }
       );
     }

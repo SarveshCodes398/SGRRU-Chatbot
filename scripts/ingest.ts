@@ -2,7 +2,7 @@ import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { Document } from '@langchain/core/documents';
-import { LocalBgeEmbeddings } from '../src/lib/embeddings';
+import { createUniversityEmbeddings, UNIVERSITY_NAMESPACE } from '../src/lib/embeddings';
 import { getPineconeIndex } from '../src/lib/pineconeIndex';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
@@ -64,13 +64,13 @@ async function ingest() {
     
     const pineconeIndex = getPineconeIndex(pinecone, pineconeIndexName);
 
-    const embeddings = new LocalBgeEmbeddings();
+    const embeddings = createUniversityEmbeddings();
 
     console.log('Creating embeddings...');
     const vectors = await embeddings.embedDocuments(
       splitDocs.map((doc) => doc.pageContent)
     );
-    const namespace = pineconeIndex.namespace('');
+    const namespace = pineconeIndex.namespace(UNIVERSITY_NAMESPACE);
     const records = splitDocs.map((doc, index) => ({
       id: `sgrr-${index}`,
       values: vectors[index],
