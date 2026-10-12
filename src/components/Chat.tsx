@@ -43,7 +43,16 @@ export default function Chat() {
         body: JSON.stringify({ messages: [...messages, userMessage] }),
       });
 
-      if (!response.ok) throw new Error('Network response was not ok');
+      if (!response.ok) {
+        let errorMessage = 'The assistant is temporarily unavailable. Please try again in a moment.';
+        try {
+          const errorBody = await response.json();
+          if (typeof errorBody.error === 'string') errorMessage = errorBody.error;
+        } catch {
+          // Keep the safe fallback when the response is not JSON.
+        }
+        throw new Error(errorMessage);
+      }
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -72,7 +81,10 @@ export default function Chat() {
       }
     } catch (err) {
       console.error(err);
-      setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' }]);
+      const errorMessage = err instanceof Error
+        ? err.message
+        : 'The assistant is temporarily unavailable. Please try again in a moment.';
+      setMessages((prev) => [...prev, { id: Date.now().toString(), role: 'assistant', content: errorMessage }]);
     } finally {
       setIsLoading(false);
     }

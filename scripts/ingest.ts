@@ -1,8 +1,9 @@
-// @ts-nocheck
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Pinecone } from '@pinecone-database/pinecone';
-import { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
+import { Document } from '@langchain/core/documents';
+import { LocalBgeEmbeddings } from '../src/lib/embeddings';
+import { getPineconeIndex } from '../src/lib/pineconeIndex';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -21,10 +22,8 @@ async function ingest() {
     const pineconeApiKey = process.env.PINECONE_API_KEY;
     const pineconeIndexName = process.env.PINECONE_INDEX;
 
-    const hfToken = process.env.HF_TOKEN;
-
-    if (!pineconeApiKey || !pineconeIndexName || !hfToken) {
-      throw new Error('Please ensure PINECONE_API_KEY, PINECONE_INDEX, and HF_TOKEN are set in .env or .env.local');
+    if (!pineconeApiKey || !pineconeIndexName) {
+      throw new Error('Please ensure PINECONE_API_KEY and PINECONE_INDEX are set in .env or .env.local');
     }
 
     console.log('Loading PDFs...');
@@ -41,7 +40,7 @@ async function ingest() {
         return;
     }
 
-    let allDocs: any[] = [];
+    let allDocs: Document[] = [];
     for (const file of files) {
         const filePath = path.join(dataDir, file);
         console.log(`Parsing ${file}...`);
@@ -63,12 +62,9 @@ async function ingest() {
       apiKey: pineconeApiKey,
     });
     
-    const pineconeIndex = pinecone.Index(pineconeIndexName);
+    const pineconeIndex = getPineconeIndex(pinecone, pineconeIndexName);
 
-    const embeddings = new HuggingFaceInferenceEmbeddings({
-      apiKey: hfToken,
-      model: 'BAAI/bge-large-en-v1.5',
-    });
+    const embeddings = new LocalBgeEmbeddings();
 
     console.log('Creating embeddings...');
     const vectors = await embeddings.embedDocuments(
@@ -87,7 +83,7 @@ async function ingest() {
     }
 
     console.log('Ingestion complete! Your vector database is ready.');
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Error during ingestion:', error);
   }
 }

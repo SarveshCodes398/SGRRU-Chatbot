@@ -11,8 +11,8 @@ A production-ready RAG Chatbot for SGRR University, built with Next.js, Langchai
 
 ## Prerequisites
 1. **Groq API Key**: Get one from [console.groq.com](https://console.groq.com/).
-2. **Google Gemini API Key**: For fast, high-quality text embeddings. Get it from Google AI Studio.
-3. **Pinecone API Key**: Create a free vector index at [pinecone.io](https://pinecone.io). Make sure the dimension size matches the embedding model (Google's `text-embedding-004` uses 768 dimensions).
+2. **Pinecone API Key**: Create an index with 1024 dimensions at [pinecone.io](https://pinecone.io).
+3. A Node.js server with sufficient memory and writable disk space for the local BGE embedding model.
 
 ## Setup Instructions
 
@@ -25,10 +25,11 @@ A production-ready RAG Chatbot for SGRR University, built with Next.js, Langchai
    Rename `.env.example` to `.env.local` and fill in your keys:
    ```bash
    GROQ_API_KEY=your_groq_key
-   GOOGLE_API_KEY=your_google_key
    PINECONE_API_KEY=your_pinecone_key
-   PINECONE_INDEX=your_index_name
+   PINECONE_INDEX=your_index_name_or_https_host_url
    ```
+
+   `HF_TOKEN` and `GOOGLE_API_KEY` are not required. `GROQ_MODEL` is optional and defaults to `openai/gpt-oss-20b`.
 
 3. **Ingest PDFs into Vector Database**
    Put your `fees.pdf` and `brochure.pdf` in the `data/` folder at the root of the project.
@@ -44,4 +45,4 @@ A production-ready RAG Chatbot for SGRR University, built with Next.js, Langchai
    Open `http://localhost:3000` to start chatting!
 
 ## Deployment
-This app is ready to be deployed to Vercel. Just connect your GitHub repo and add the environment variables in your Vercel project settings.
+The chat endpoint runs embeddings locally, avoiding Hugging Face Inference Provider credit limits. The model downloads on first use. In production, configure `TRANSFORMERS_CACHE` to use writable persistent storage and ensure the server has enough memory for inference. Keep the Pinecone index at 1024 dimensions and re-run ingestion after switching from the old inference embeddings to refresh stored vectors.

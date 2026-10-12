@@ -1,28 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { PineconeStore } from '@langchain/pinecone';
-import { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
+import { Document } from '@langchain/core/documents';
 import { ChatGroq } from '@langchain/groq';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
+import { LocalBgeEmbeddings } from '@/lib/embeddings';
+import { getPineconeIndex } from '@/lib/pineconeIndex';
 
-const formatDocumentsAsString = (docs: any[]) => docs.map((doc) => doc.pageContent).join('\n\n');
+const formatDocumentsAsString = (docs: Document[]) => docs.map((doc) => doc.pageContent).join('\n\n');
 let pineconeStore: PineconeStore | null = null;
 
 async function initVectorStore() {
   if (pineconeStore) return pineconeStore;
 
-  const pinecone = new Pinecone({
-    apiKey: process.env.PINECONE_API_KEY!,
-  });
-  const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX!);
+  if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX) {
+    throw new Error('Pinecone is not configured.');
+  }
 
-  const embeddings = new HuggingFaceInferenceEmbeddings({
-    apiKey: process.env.HF_TOKEN!,
-    model: 'BAAI/bge-large-en-v1.5',
+  const pinecone = new Pinecone({
+    apiKey: process.env.PINECONE_API_KEY,
   });
+  const pineconeIndex = getPineconeIndex(pinecone, process.env.PINECONE_INDEX);
+  const embeddings = new LocalBgeEmbeddings();
 
   pineconeStore = await PineconeStore.fromExistingIndex(embeddings, {
     pineconeIndex,
@@ -34,11 +36,13 @@ async function initVectorStore() {
 const chatRequestSchema = z.object({
   messages: z.array(
     z.object({
-      role: z.string(),
-      content: z.string(),
+      role: z.enum(['user', 'assistant']),
+      content: z.string().trim().min(1).max(4000),
     })
-  ),
+  ).min(1).max(30),
 });
+
+const isGreeting = (message: string) => /^(hi+|hello+|hey+|namaste)[.!?\s]*$/i.test(message.trim());
 
 export async function POST(req: NextRequest) {
   try {
@@ -57,10 +61,30 @@ export async function POST(req: NextRequest) {
     }
 
     const query = lastMessage.content;
+
+    if (isGreeting(query)) {
+      return new Response("Hello! I'm here to help with questions about SGRR University. How can I assist you today?", {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
+
+    if (!process.env.GROQ_API_KEY) {
+      return NextResponse.json(
+        { error: 'The assistant is not configured yet. Please contact the site administrator.', code: 'CONFIGURATION_ERROR' },
+        { status: 503 }
+      );
+    }
+
     const vectorStore = await initVectorStore();
-    
-    const retriever = vectorStore.asRetriever(4);
-    const contextDocs = await retriever.invoke(query);
+    const contextDocs = await vectorStore.asRetriever(4).invoke(query);
+
+    if (contextDocs.length === 0) {
+      return new Response(
+        "I don't have verified SGRR University information available right now. Please check the university's official website or contact admissions.",
+        { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }
+      );
+    }
+
     const contextText = formatDocumentsAsString(contextDocs);
 
     const llm = new ChatGroq({
@@ -107,8 +131,11 @@ Assistant Answer:
       },
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Chat API Error:', error);
-    return NextResponse.json({ error: error.message || 'Something went wrong' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'The assistant is temporarily unavailable. Please try again in a moment.', code: 'ASSISTANT_UNAVAILABLE' },
+      { status: 503 }
+    );
   }
 }
