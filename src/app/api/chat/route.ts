@@ -1,39 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Pinecone } from '@pinecone-database/pinecone';
-import { PineconeStore } from '@langchain/pinecone';
 import { Document } from '@langchain/core/documents';
 import { ChatGroq } from '@langchain/groq';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { PromptTemplate } from '@langchain/core/prompts';
 import { RunnableSequence } from '@langchain/core/runnables';
 import { z } from 'zod';
-import { createUniversityEmbeddings, UNIVERSITY_NAMESPACE } from '@/lib/embeddings';
-import { getPineconeIndex } from '@/lib/pineconeIndex';
+import { searchStoredPineconeText } from '@/lib/pineconeTextSearch';
 
 const formatDocumentsAsString = (docs: Document[]) => docs.map((doc) => doc.pageContent).join('\n\n');
-let pineconeStore: PineconeStore | null = null;
 
 export const maxDuration = 60;
 
-async function initVectorStore() {
-  if (pineconeStore) return pineconeStore;
-
+function createPineconeClient() {
   if (!process.env.PINECONE_API_KEY || !process.env.PINECONE_INDEX) {
     throw new Error('Pinecone is not configured.');
   }
 
-  const pinecone = new Pinecone({
-    apiKey: process.env.PINECONE_API_KEY,
-  });
-  const pineconeIndex = getPineconeIndex(pinecone, process.env.PINECONE_INDEX);
-  const embeddings = createUniversityEmbeddings();
-
-  pineconeStore = await PineconeStore.fromExistingIndex(embeddings, {
-    pineconeIndex,
-    namespace: UNIVERSITY_NAMESPACE,
-  });
-
-  return pineconeStore;
+  return new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
 }
 
 const chatRequestSchema = z.object({
@@ -71,18 +55,23 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (!process.env.GROQ_API_KEY || !process.env.GOOGLE_API_KEY) {
+    if (!process.env.GROQ_API_KEY) {
       return NextResponse.json(
         {
-          error: 'The assistant is missing a required API key. Set GROQ_API_KEY and GOOGLE_API_KEY in the deployment environment.',
+          error: 'The assistant is missing GROQ_API_KEY in the deployment environment.',
           code: 'CONFIGURATION_ERROR',
         },
         { status: 503 }
       );
     }
 
-    const vectorStore = await initVectorStore();
-    const contextDocs = await vectorStore.asRetriever(4).invoke(query);
+    const pinecone = createPineconeClient();
+    const contextDocs = await searchStoredPineconeText(
+      pinecone,
+      process.env.PINECONE_INDEX!,
+      query,
+      4
+    );
 
     if (contextDocs.length === 0) {
       return new Response(
@@ -110,6 +99,7 @@ Guidelines:
 3. Base your answers strictly on the context provided. If the answer is not in the context, say you don't have the exact information but provide related helpful info if possible.
 4. Structure your output nicely. Use bullet points or short paragraphs.
 5. GREETINGS: If the user simply sends a greeting (e.g., "hi", "heyy", "namaste", "hello"), respond warmly with a greeting like "Hello! 👋 I'm here to help with any questions you have about SGRR University. How can I assist you today?" and do NOT mention the context.
+6. For fees, preserve the PDF's exact labels, categories, and totals. If the extracted table is ambiguous, say so instead of assigning amounts to components or inferring what's included.
 
 Context Information:
 {context}

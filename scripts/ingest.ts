@@ -1,8 +1,8 @@
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Pinecone } from '@pinecone-database/pinecone';
+import { HuggingFaceInferenceEmbeddings } from '@langchain/community/embeddings/hf';
 import { Document } from '@langchain/core/documents';
-import { createUniversityEmbeddings, UNIVERSITY_NAMESPACE } from '../src/lib/embeddings';
 import { getPineconeIndex } from '../src/lib/pineconeIndex';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
@@ -21,9 +21,10 @@ async function ingest() {
   try {
     const pineconeApiKey = process.env.PINECONE_API_KEY;
     const pineconeIndexName = process.env.PINECONE_INDEX;
+    const hfToken = process.env.HF_TOKEN;
 
-    if (!pineconeApiKey || !pineconeIndexName) {
-      throw new Error('Please ensure PINECONE_API_KEY and PINECONE_INDEX are set in .env or .env.local');
+    if (!pineconeApiKey || !pineconeIndexName || !hfToken) {
+      throw new Error('Please ensure PINECONE_API_KEY, PINECONE_INDEX, and HF_TOKEN are set in .env or .env.local');
     }
 
     console.log('Loading PDFs...');
@@ -64,13 +65,17 @@ async function ingest() {
     
     const pineconeIndex = getPineconeIndex(pinecone, pineconeIndexName);
 
-    const embeddings = createUniversityEmbeddings();
+    const embeddings = new HuggingFaceInferenceEmbeddings({
+      apiKey: hfToken,
+      model: 'BAAI/bge-large-en-v1.5',
+    });
 
     console.log('Creating embeddings...');
     const vectors = await embeddings.embedDocuments(
       splitDocs.map((doc) => doc.pageContent)
     );
-    const namespace = pineconeIndex.namespace(UNIVERSITY_NAMESPACE);
+
+    const namespace = pineconeIndex.namespace('');
     const records = splitDocs.map((doc, index) => ({
       id: `sgrr-${index}`,
       values: vectors[index],
@@ -85,6 +90,7 @@ async function ingest() {
     console.log('Ingestion complete! Your vector database is ready.');
   } catch (error: unknown) {
     console.error('Error during ingestion:', error);
+    process.exitCode = 1;
   }
 }
 
